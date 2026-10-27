@@ -11,6 +11,7 @@ from app.integrations.research import ResearchProviders
 from app.schemas.research import Contract, ResearchRequest
 from app.schemas.content import Generate, CaptionEdit, Caption
 from app.media import generate_media, transform_image
+from app.skills import select_skill_context
 
 router = APIRouter(prefix="/api")
 
@@ -33,10 +34,15 @@ async def recreate(body: CaptionEdit, request: Request, user=Depends(current_use
         campaign = await owned_campaign(db, body.campaignId, user["id"])
     if body.platform not in campaign["platforms"]:
         raise HTTPException(400, "Choose a campaign platform.")
-    result = await ResearchProviders(get_settings(), request.app.state.http).structured("caption_editing",
-        EDITORIAL_RULES + " Preserve meaning, URLs, dates and qualifications. Do not add new factual claims. A rewrite is not a fact check.",
+    providers = ResearchProviders(get_settings(), request.app.state.http)
+    skills = await select_skill_context(providers, json.dumps({
+        "agent": "caption editor", "task": body.model_dump(), "platform": body.platform,
+        "requirement": "Rewrite an existing caption without changing its factual meaning.",
+    }, default=str))
+    result = await providers.structured("caption_editing",
+        skills + "\n\n" + EDITORIAL_RULES + " Preserve meaning, URLs, dates and qualifications. Do not add new factual claims. A rewrite is not a fact check.",
         json.dumps({"input": body.model_dump(), "context": await context(campaign)}, default=str), Caption)
-    return result.model_dump() | {"modelUsed": "SenseNova (" + get_settings().sensenova_model + ")"}
+    return result.model_dump() | {"modelUsed": f"{providers.last_text_provider} ({providers.last_text_model})"}
 
 
 class ImageRequest(Contract):

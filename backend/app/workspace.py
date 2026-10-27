@@ -14,18 +14,21 @@ from app.credentials import encrypt_credential
 from app.db import transaction, table, owned_campaign, now
 from app.integrations.zernio import accounts, user_key
 from app.policy import review, summarize_metrics
-from app.schemas.content import CampaignCreate, CampaignUpdate, Draft, Recommendation
+from app.schemas.content import CampaignCreate, CampaignUpdate, Draft, Recommendation, objective_metric
 from app.schemas.research import Contract
 
 router = APIRouter(prefix="/api")
 
 
 def serialize_plan(plan, tasks):
+    failed = next((task for task in tasks if task["status"] == "failed"), None)
     return {"id": plan["id"], "title": plan["title"], "createdAt": plan["createdAt"],
         "status": plan["status"], "errorMessage": plan["errorMessage"],
+        "failedAgent": failed["agentType"] if failed else None, "brief": plan.get("brief") or None,
         "progressPercent": round(sum(t["status"] == "done" for t in tasks) / len(tasks) * 100) if tasks else 0,
         "tasks": [{"id": t["id"], "title": t["title"], "assignedAgent": t["agentType"], "status": t["status"],
-                   "order": t["orderIndex"], "detail": json.dumps(t["outputData"], ensure_ascii=False) if t["outputData"] else None} for t in tasks]}
+                   "order": t["orderIndex"], "error": (t["outputData"] or {}).get("error") if isinstance(t["outputData"], dict) else None,
+                   "detail": json.dumps(t["outputData"], ensure_ascii=False) if t["outputData"] else None} for t in tasks]}
 
 
 def serialize_campaign(campaign, posts):
@@ -45,7 +48,7 @@ async def workspace(db, campaign):
     tasks = await db.rows(select(at).where(at.c.planId.in_([plan["id"] for plan in plans])).order_by(at.c.orderIndex)) if plans else []
     reports = await db.rows(select(sr).where(sr.c.campaignId == campaign["id"]).order_by(sr.c.createdAt.desc()).limit(10))
     decisions = await db.rows(select(rd).where(rd.c.reportId.in_([r["id"] for r in reports]))) if reports else []
-    messages = await db.rows(select(am.c.id, am.c.sender, am.c.content, am.c.createdAt).where(am.c.campaignId == campaign["id"]).order_by(am.c.createdAt.desc()).limit(100))
+    messages = await db.rows(select(am.c.id, am.c.sender, am.c.content, am.c.createdAt, am.c.metadata).where(am.c.campaignId == campaign["id"]).order_by(am.c.createdAt.desc()).limit(100))
     published = [post for post in posts if post["status"] == "PUBLISHED"]
     measured = [by_post[post["id"]] for post in published if post["id"] in by_post]
     summary = summarize_metrics(measured)
@@ -55,6 +58,8 @@ async def workspace(db, campaign):
         ui_posts.append({"id": post["id"], "title": post["title"], "caption": post["caption"], "hashtags": post["hashtags"],
             "platform": post["platforms"][0], "format": post["format"], "status": post["status"],
             "imageUrl": next(iter(post["mediaUrls"]), None), "mediaUrls": post["mediaUrls"], "metrics": by_post.get(post["id"]),
+            "createdAt": post["createdAt"].replace(tzinfo=timezone.utc).isoformat(),
+            "publishedAt": post["publishedAt"].replace(tzinfo=timezone.utc).isoformat() if post["publishedAt"] else None,
             "scheduledTime": post["scheduledAt"].replace(tzinfo=timezone.utc).isoformat() if post["scheduledAt"] else None,
             "calendarDay": post["scheduledAt"].replace(tzinfo=timezone.utc).astimezone(ZoneInfo(campaign["timezone"])).day if post["scheduledAt"] else None,
             "timeSlot": post["suggestedTimeSlot"], "isAiGenerated": post["isAiGenerated"], "qualityReview": post["qualityReview"],
@@ -93,7 +98,8 @@ async def create_campaign(body: CampaignCreate, request: Request, user=Depends(c
                     "handle": a["username"], "isConnected": True, "createdAt": now(), "updatedAt": now()}
             await db.connection.execute(insert(t).values(**data).on_conflict_do_update(index_elements=[t.c.userId, t.c.accountId],
                 set_={k: data[k] for k in ("platform", "handle", "isConnected", "updatedAt")}))
-        campaign = await db.insert("Campaign", body.model_dump() | {"userId": user["id"], "platforms": platforms, "status": "active", "tone": "", "postingCadence": ""})
+        campaign = await db.insert("Campaign", body.model_dump() | {"targetMetric": objective_metric(body.objective),
+            "userId": user["id"], "platforms": platforms, "status": "active", "tone": "", "postingCadence": ""})
     return {"campaign": serialize_campaign(campaign, [])}
 
 
@@ -105,9 +111,12 @@ async def get_campaign(campaign_id: str, user=Depends(current_user)):
 
 @router.patch("/campaigns/{campaign_id}")
 async def update_campaign(campaign_id: str, body: CampaignUpdate, user=Depends(current_user)):
+    data = body.model_dump(exclude_unset=True)
+    if body.objective:
+        data["targetMetric"] = objective_metric(body.objective)
     async with transaction() as db:
         await owned_campaign(db, campaign_id, user["id"])
-        await db.update("Campaign", table("Campaign").c.id == campaign_id, body.model_dump(exclude_unset=True))
+        await db.update("Campaign", table("Campaign").c.id == campaign_id, data)
     return {"success": True}
 
 

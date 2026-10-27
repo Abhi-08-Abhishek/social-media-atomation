@@ -3,75 +3,200 @@ import base64
 import hashlib
 import io
 import json
-import re
+import os
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse, quote
 
-from PIL import Image, ImageDraw, ImageFont
-from fastapi import HTTPException
+from PIL import Image, ImageColor, ImageDraw, ImageFont, ImageOps
 from app.config import get_settings
 
 render_lock = asyncio.Semaphore(1)
+image_generation_limit = asyncio.Semaphore(2)
+MAX_IMAGE_BYTES = 20 * 1024 * 1024
 
 
-def font(size, bold=False):
-    candidates = ([Path("C:/Windows/Fonts/seguisb.ttf" if bold else "C:/Windows/Fonts/segoeui.ttf"),
-                   Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")])
-    for path in candidates:
-        if path.is_file():
-            return ImageFont.truetype(str(path), size)
-    raise ValueError("Install Segoe UI or DejaVu Sans before rendering media.")
+def validate_image(data):
+    if not data or len(data) > MAX_IMAGE_BYTES:
+        raise ValueError("Generated image is empty or exceeds 20 MB.")
+    try:
+        with Image.open(io.BytesIO(data)) as image:
+            width, height, kind = image.width, image.height, image.format
+            image.verify()
+    except Exception:
+        raise ValueError("Image provider returned an invalid image.") from None
+    extension = {"PNG": "png", "JPEG": "jpg", "WEBP": "webp"}.get(kind)
+    if not extension or min(width, height) < 1024:
+        raise ValueError("Generated image must be PNG, JPEG or WebP with a shortest side of at least 1024px.")
+    return extension
 
 
-def wrap(text, face, width, max_lines):
-    lines, current = [], ""
-    for word in text.split():
-        if face.getlength(word) > width:
-            raise ValueError("The visual contains a word too long for the layout.")
-        candidate = (current + " " + word).strip()
-        if face.getlength(candidate) <= width:
-            current = candidate
+async def generate_image(http, prompt, aspect_ratio):
+    settings = get_settings()
+    account_id = settings.cloudflare_account_id
+    token = settings.cloudflare_api_token.get_secret_value()
+    model = settings.cloudflare_image_model
+    if (len(account_id) != 32 or any(char not in "0123456789abcdefABCDEF" for char in account_id)
+            or not token or not model.startswith("@cf/") or any(char in model for char in "?#")):
+        raise ValueError("Cloudflare image generation is not configured correctly in backend/.env.")
+    endpoint = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/{model}"
+    payload = {"prompt": prompt, "steps": 4}
+    timeout = settings.media_generation_timeout_seconds
+    async with image_generation_limit:
+        for attempt in range(3):
+            response = await http.post(endpoint, headers={"Authorization": "Bearer " + token},
+                                       json=payload, timeout=timeout)
+            if response.status_code in {429, 502, 503, 504} and attempt < 2:
+                await asyncio.sleep(2 ** attempt)
+                continue
+            if not response.is_success:
+                raise ValueError(f"Cloudflare image generation failed with status {response.status_code}.")
+            try:
+                data = base64.b64decode(response.json()["result"]["image"], validate=True)
+            except (KeyError, IndexError, TypeError, ValueError):
+                raise ValueError("Cloudflare returned no usable image.") from None
+            return data, validate_image(data)
+    raise AssertionError("Unreachable")
+
+
+def visual_prompt(slide, campaign, source, index, total, aspect_ratio, creative_brief=None):
+    profile = campaign.get("brandProfile") or {}
+    brief = creative_brief or {}
+    return "\n".join([
+        f"Create a high-resolution {aspect_ratio} text-free editorial background illustration.",
+        f"Brand: {campaign['name']}. Brand description: {campaign.get('brandDescription', '')}.",
+        f"Visual style: {profile.get('visualStyle', 'clean premium editorial infographic')}. Primary accent: {profile.get('accentColor', '#2563eb')}.",
+        f"Audience: {brief.get('audience', campaign.get('targetAudience', ''))}. Angle: {brief.get('angle', '')}.",
+        f"Creative direction: {brief.get('visualDirection', '')}. Intended takeaway: {brief.get('takeaway', '')}.",
+        f"Visually communicate this concept without words: {slide['headline']}. {slide['body']}",
+        "Keep the same art direction, palette and subject treatment across the series." if total > 1 else "",
+        "Use a polished professional illustration with a calm composition and generous negative space.",
+        "Do not render any text, letters, numbers, symbols, captions, labels, logos, watermarks, interfaces, or signage.",
+    ])
+
+
+def _font(size, bold=False):
+    windows = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts"
+    names = [windows / ("seguisb.ttf" if bold else "segoeui.ttf"),
+             "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf"]
+    for name in names:
+        try:
+            return ImageFont.truetype(str(name), size)
+        except OSError:
+            continue
+    raise ValueError("No supported TrueType font is installed for media rendering.")
+
+
+def _lines(draw, text, font, width, limit):
+    words = " ".join(str(text).split()).split()
+    lines = []
+    for word in words:
+        candidate = word if not lines else lines[-1] + " " + word
+        if draw.textlength(candidate, font=font) <= width:
+            if lines:
+                lines[-1] = candidate
+            else:
+                lines.append(candidate)
         else:
-            lines.append(current)
-            current = word
-    if current:
-        lines.append(current)
-    if len(lines) > max_lines:
-        raise ValueError("The visual text is too long for the layout. Shorten it before rendering.")
-    return lines
+            if draw.textlength(word, font=font) > width:
+                raise ValueError("Approved image text contains a word that is too wide for the template.")
+            lines.append(word)
+        if len(lines) > limit:
+            raise ValueError("Approved image text does not fit the template; shorten it before approval.")
+    return "\n".join(lines)
 
 
-def render_slide(slide, brand, accent, source="", index=0, total=1, height=1350):
-    if not re.fullmatch(r"#[0-9a-fA-F]{6}", accent):
-        raise ValueError("Invalid brand colour.")
-    dark = index == 0
-    bg, ink, muted = ("#101828", "#f8fafc", "#b9c4d3") if dark else ("#f7f8fa", "#101828", "#526071")
-    im = Image.new("RGB", (1080, height), bg)
-    draw = ImageDraw.Draw(im)
-    draw.rounded_rectangle((72, 68, 112, 108), radius=12, fill=accent)
-    draw.text((132, 68), brand[:40], font=font(28, True), fill=ink)
-    draw.text((72, 170 if height < 1600 else 360), slide["eyebrow"].upper(), font=font(25, True), fill=accent)
-    y = 235 if height < 1600 else 440
-    headline = font(70 if height != 1080 else 62, True)
-    for line in wrap(slide["headline"], headline, 936, 4):
-        draw.text((72, y), line, font=headline, fill=ink)
-        y += 88
-    y += 48
-    body = font(36 if height != 1080 else 32)
-    for line in wrap(slide["body"], body, 920, 7 if height > 1080 else 5):
-        if y > height - 240:
-            raise ValueError("The visual copy overflows the safe text area.")
-        draw.text((72, y), line, font=body, fill=muted)
-        y += 54
-    draw.line((72, height - 156, 1008, height - 156), fill=accent, width=3)
-    draw.text((72, height - 116), source[:75], font=font(20), fill=muted)
-    draw.text((930, height - 116), f"{index + 1:02}/{total:02}", font=font(22, True), fill=ink)
+def render_slide(data, slide, campaign, source, index, total, aspect_ratio):
+    size = (1080, 1920) if aspect_ratio == "9:16" else (1080, 1350)
+    with Image.open(io.BytesIO(data)) as generated:
+        fitted = ImageOps.fit(generated.convert("RGB"), size, method=Image.Resampling.LANCZOS)
+    # Copy onto a fresh RGB canvas so provider transparency/color metadata cannot affect our text.
+    canvas = Image.new("RGB", size)
+    canvas.paste(fitted)
+    profile = campaign.get("brandProfile") or {}
+    try:
+        accent = ImageColor.getrgb(profile.get("accentColor", "#2563eb"))
+    except ValueError:
+        accent = (37, 99, 235)
+    draw = ImageDraw.Draw(canvas)
+    margin = 54
+    points = slide.get("points") or []
+    panel_bottom = size[1] - margin if points else (920 if aspect_ratio == "9:16" else 760)
+    draw.rounded_rectangle((margin + 8, margin + 12, size[0] - margin + 8, panel_bottom + 12),
+                           radius=38, fill=(148, 163, 184))
+    draw.rounded_rectangle((margin, margin, size[0] - margin, panel_bottom),
+                           radius=38, fill=(255, 255, 255))
+    if not points:
+        draw.rounded_rectangle((margin + 8, size[1] - 134 + 8, size[0] - margin + 8, size[1] - margin + 8),
+                               radius=24, fill=(148, 163, 184))
+        draw.rounded_rectangle((margin, size[1] - 134, size[0] - margin, size[1] - margin),
+                               radius=24, fill=(255, 255, 255))
+    left, right = 94, size[0] - 94
+    width = right - left
+    brand_font, eyebrow_font = _font(24, True), _font(24, True)
+    headline_font = _font(66 if aspect_ratio != "9:16" else 72, True)
+    body_font = _font(29 if aspect_ratio != "9:16" else 32)
+    point_title_font = _font(27 if aspect_ratio != "9:16" else 30, True)
+    point_body_font = _font(22 if aspect_ratio != "9:16" else 26)
+    footer_font = _font(18)
+
+    brand = str(campaign.get("name") or "").strip()
+    accent_soft = tuple(round(channel * .14 + 255 * .86) for channel in accent)
+    chip_width = min(width, int(draw.textlength(brand, font=brand_font)) + 44)
+    draw.rounded_rectangle((left, 92, left + chip_width, 142), radius=25, fill=accent_soft)
+    draw.ellipse((left + 14, 108, left + 28, 122), fill=accent)
+    draw.text((left + 36, 102), brand, font=brand_font, fill=(30, 41, 59))
+    eyebrow = str(slide.get("eyebrow") or "A useful takeaway").upper()
+    draw.text((left, 182), eyebrow, font=eyebrow_font, fill=accent)
+
+    headline = _lines(draw, slide["headline"], headline_font, width, 3)
+    draw.multiline_text((left, 228), headline, font=headline_font, fill=(15, 23, 42), spacing=8)
+    headline_box = draw.multiline_textbbox((left, 228), headline, font=headline_font, spacing=8)
+    y = headline_box[3] + 30
+    body = _lines(draw, slide.get("body", ""), body_font, width, 4)
+    draw.multiline_text((left, y), body, font=body_font, fill=(71, 85, 105), spacing=8)
+    body_box = draw.multiline_textbbox((left, y), body, font=body_font, spacing=8)
+    y = body_box[3] + 34
+
+    if points:
+        available = size[1] - 150 - y
+        gap = 14
+        card_height = (available - gap * (len(points) - 1)) // len(points)
+        if card_height < 126:
+            raise ValueError("Approved infographic points do not fit the template; shorten them before approval.")
+        for point_index, point in enumerate(points):
+            top = y + point_index * (card_height + gap)
+            bottom = top + card_height
+            draw.rounded_rectangle((left, top, right, bottom), radius=22, fill=(248, 250, 252),
+                                   outline=accent, width=2)
+            circle_top = top + 22
+            draw.ellipse((left + 20, circle_top, left + 70, circle_top + 50), fill=accent)
+            number = str(point_index + 1)
+            number_box = draw.textbbox((0, 0), number, font=point_title_font)
+            draw.text((left + 45 - (number_box[2] - number_box[0]) / 2,
+                       circle_top + 25 - (number_box[3] - number_box[1]) / 2 - number_box[1]),
+                      number, font=point_title_font, fill="white")
+            text_left = left + 92
+            point_width = right - text_left - 22
+            title = _lines(draw, point["title"], point_title_font, point_width, 1)
+            detail = _lines(draw, point["body"], point_body_font, point_width, 2)
+            draw.text((text_left, top + 18), title, font=point_title_font, fill=(15, 23, 42))
+            draw.multiline_text((text_left, top + 57), detail, font=point_body_font,
+                                fill=(71, 85, 105), spacing=5)
+    elif y > panel_bottom - 30:
+        raise ValueError("Approved image text does not fit the template; shorten it before approval.")
+
+    draw.line((left, size[1] - 112, right, size[1] - 112), fill=accent, width=4)
+    draw.text((left, size[1] - 91), source, font=footer_font, fill=(100, 116, 139))
+    counter = f"{index + 1:02}/{total:02}"
+    draw.text((right, size[1] - 91), counter, font=footer_font, fill=(30, 41, 59), anchor="ra")
     output = io.BytesIO()
-    im.save(output, "PNG")
-    return output.getvalue()
+    canvas.save(output, format="PNG", optimize=True)
+    rendered = output.getvalue()
+    validate_image(rendered)
+    return rendered, "png"
 
 
 async def upload(http, data, extension):
@@ -80,7 +205,7 @@ async def upload(http, data, extension):
         raise ValueError("Image storage is not configured in backend/.env.")
     name = hashlib.sha256(data).hexdigest() + "." + extension
     response = await http.post("https://upload.imagekit.io/api/v1/files/upload", auth=(key, ""),
-        files={"file": (name, data, "video/mp4" if extension == "mp4" else "image/png")},
+        files={"file": (name, data, {"mp4": "video/mp4", "jpg": "image/jpeg", "webp": "image/webp"}.get(extension, "image/png"))},
         data={"fileName": name, "folder": "/socialix/generated", "useUniqueFileName": "true"}, timeout=120)
     if not response.is_success:
         raise ValueError("Media storage upload failed.")
@@ -90,16 +215,16 @@ async def upload(http, data, extension):
     return url
 
 
-def render_reel(scenes, brand, accent, source):
+def render_reel(frames, scenes):
     if sys.platform != "win32":
         raise ValueError("Local narration currently requires a Windows render host.")
     settings = get_settings()
     with tempfile.TemporaryDirectory(prefix="socialix-reel-") as directory:
         root = Path(directory)
         clips = []
-        for i, scene in enumerate(scenes):
+        for i, (frame_data, scene) in enumerate(zip(frames, scenes)):
             frame, speech, audio, clip = [root / f"scene-{i}.{extension}" for extension in ("png", "json", "wav", "mp4")]
-            frame.write_bytes(render_slide(scene, brand, accent, source, i, len(scenes), 1920))
+            frame.write_bytes(frame_data)
             speech.write_text(json.dumps({"text": scene["narration"]}), encoding="utf-8")
             subprocess.run([sys.executable, "-m", "app.narrate", str(speech), str(audio)], check=True,
                            timeout=60, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
@@ -109,7 +234,8 @@ def render_reel(scenes, brand, accent, source):
                 raise ValueError("Narration duration is outside the supported range.")
             subprocess.run([settings.ffmpeg_path, "-y", "-loop", "1", "-i", str(frame), "-i", str(audio),
                 "-t", str(duration), "-r", "24", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
-                "-vf", "fade=t=in:st=0:d=0.25", "-af", "apad,loudnorm", "-c:a", "aac", "-ar", "48000", str(clip)],
+                "-vf", "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,fade=t=in:st=0:d=0.25",
+                "-af", "apad,loudnorm", "-c:a", "aac", "-ar", "48000", str(clip)],
                 check=True, timeout=180, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
             clips.append(clip)
         manifest = root / "clips.txt"
@@ -127,21 +253,28 @@ def render_reel(scenes, brand, accent, source):
 
 
 async def generate_media(http, post, campaign):
-    profile = campaign.get("brandProfile") or {}
-    brand, accent = campaign["name"], profile.get("accentColor", "#2563eb")
     sources = post.get("sourceUrls", [])
     source = "Source: " + urlparse(str(sources[0])).hostname if sources else ""
-    async with render_lock:
-        if post["format"] == "Reel":
+    if post["format"] == "Carousel":
+        slides, aspect = post["slides"], "4:5"
+    elif post["format"] == "Reel":
+        slides, aspect = post["scenes"], "9:16"
+    else:
+        slides, aspect = [{"eyebrow": "A useful takeaway", "headline": post["imageHeadline"],
+                           "body": post["imageSummary"], "points": post.get("imagePoints", [])}], "4:5"
+    generated = await asyncio.gather(*(generate_image(http,
+        visual_prompt(slide, campaign, source, index, len(slides), aspect, post.get("creativeBrief")), aspect)
+        for index, slide in enumerate(slides)))
+    generated = [render_slide(data, slide, campaign, source, index, len(slides), aspect)
+                 for index, ((data, _), slide) in enumerate(zip(generated, slides))]
+    if post["format"] == "Reel":
+        async with render_lock:
             try:
-                data = await asyncio.to_thread(render_reel, post["scenes"], brand, accent, source)
+                data = await asyncio.to_thread(render_reel, [data for data, _ in generated], post["scenes"])
             except (subprocess.SubprocessError, OSError):
                 raise ValueError("Local Reel rendering failed. Check FFmpeg and the installed English voice.") from None
             return [await upload(http, data, "mp4")]
-        slides = post["slides"] if post["format"] == "Carousel" else [
-            {"eyebrow": "A useful takeaway", "headline": post["imageHeadline"], "body": post["imageSummary"]}]
-        frames = [await asyncio.to_thread(render_slide, s, brand, accent, source, i, len(slides), 1350 if post["format"] == "Carousel" else 1080) for i, s in enumerate(slides)]
-        return [await upload(http, frame, "png") for frame in frames]
+    return list(await asyncio.gather(*(upload(http, data, extension) for data, extension in generated)))
 
 
 def transform_image(src, operation, prompt="", background=""):

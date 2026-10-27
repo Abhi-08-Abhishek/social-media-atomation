@@ -3,7 +3,8 @@
 import React, { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { AgentResponse } from "./AgentResponse";
-import { useSocialixStore, AgentRole } from "@/lib/store";
+import { ScriptReview, type ContentScript } from "./ScriptReview";
+import { useSocialixStore, AgentRole, type PlanBrief } from "@/lib/store";
 import {
   Send,
   Clock,
@@ -28,6 +29,7 @@ import {
   ChevronUp,
   Tag,
   Zap,
+  FilePenLine,
 } from "lucide-react";
 
 interface AgentConfig {
@@ -57,6 +59,7 @@ export interface ChatMessage {
   text: string;
   timestamp: string;
   status?: "running" | "completed" | "error";
+  planBrief?: PlanBrief;
   planSummary?: {
     tasks: { agent: string; title: string; status: string }[];
     scheduledTime?: string;
@@ -90,6 +93,18 @@ const AGENT_CONFIGS: Record<AgentRole, AgentConfig> = {
       "Here's where you'll find the stories and sources behind your posts.",
     chatDetail:
       "Check the links and dates before turning a story into a post.",
+    historyTasks: [],
+  },
+  SCRIPT: {
+    role: "SCRIPT",
+    name: "Script Agent",
+    icon: FilePenLine,
+    color: "bg-violet-600",
+    status: "idle",
+    subtitle: "Turns research into editable scripts",
+    tabs: ["chat", "history"],
+    chatGreeting: "Review each script before any image, carousel, or Reel is generated.",
+    chatDetail: "Edit the copy or scenes, save your changes, then approve the script for the Creator Agent.",
     historyTasks: [],
   },
   CREATOR: {
@@ -156,6 +171,61 @@ function parseDetail(detail?: string): any {
   }
 }
 
+function PlannerBriefCard({ brief }: { brief: PlanBrief }) {
+  return (
+    <section className="rounded-xl border border-blue-100 bg-blue-50/40 p-4">
+      <div className="flex items-start gap-2">
+        <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
+        <div className="min-w-0">
+          <p className="text-[11px] font-bold uppercase tracking-wider text-blue-700">Plan ready</p>
+          <h3 className="mt-1 font-bold text-slate-900">{brief.title}</h3>
+        </div>
+      </div>
+      <div className="mt-3 border-l-2 border-blue-200 pl-3">
+        <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Objective</p>
+        <p className="mt-1 text-sm leading-6 text-slate-700">{brief.objective}</p>
+      </div>
+      <div className="mt-4 grid gap-4 md:grid-cols-2">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Content pillars</p>
+          <ul className="mt-2 space-y-1.5 text-xs text-slate-700">
+            {brief.contentPillars.map((pillar) => <li key={pillar} className="flex gap-2"><span className="text-blue-500">•</span><span>{pillar}</span></li>)}
+          </ul>
+        </div>
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Research questions</p>
+          <ol className="mt-2 space-y-1.5 text-xs text-slate-700">
+            {brief.researchQuestions.map((question, index) => <li key={question} className="flex gap-2"><span className="font-semibold text-blue-600">{index + 1}.</span><span>{question}</span></li>)}
+          </ol>
+        </div>
+      </div>
+      {!!brief.deliverables?.length && (
+        <div className="mt-4">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Planned deliverables</p>
+          <div className="mt-2 grid gap-2 sm:grid-cols-2">
+            {brief.deliverables.map((item, index) => (
+              <div key={`${item.platform}-${item.format}-${index}`} className="rounded-lg border border-blue-100 bg-white px-3 py-2">
+                <p className="text-[10px] font-bold uppercase tracking-wide text-blue-600">{index + 1}. {item.platform} · {item.format}</p>
+                <p className="mt-1 text-xs font-semibold text-slate-800">{item.topic}</p>
+                <p className="mt-0.5 text-[11px] leading-4 text-slate-500">{item.objective}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      <details className="group mt-4 border-t border-blue-100 pt-3">
+        <summary className="flex cursor-pointer list-none items-center gap-1 text-xs font-semibold text-blue-700">
+          View full plan <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
+        </summary>
+        <div className="mt-3 grid gap-4 md:grid-cols-2">
+          <div><p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Success metrics</p><ul className="mt-2 space-y-1 text-xs text-slate-700">{brief.successMetrics.map((item) => <li key={item}>• {item}</li>)}</ul></div>
+          <div><p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Creator instructions</p><p className="mt-2 text-xs leading-5 text-slate-700">{brief.creatorInstructions}</p></div>
+        </div>
+      </details>
+    </section>
+  );
+}
+
 export function AgentChat() {
   const { activeAgent, setActiveAgent, agentStatuses, plans, posts, executeGoal, messages: savedMessages, currentCampaignId } = useSocialixStore();
   const [activeTab, setActiveTab] = useState<string>("chat");
@@ -178,11 +248,17 @@ export function AgentChat() {
   // Load existing plan into chat history on load if available
   useEffect(() => {
     if (savedMessages.length) {
-      setMessages(savedMessages.map((message) => ({
-        id: message.id, sender: message.sender === "USER" ? "user" : "agent",
-        role: "MASTER", text: message.content,
-        timestamp: new Date(message.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-      })));
+      setMessages(savedMessages.map((message) => {
+        const plan = message.metadata?.planId ? plans.find((item) => item.id === message.metadata?.planId) : undefined;
+        const isPlannerResult = message.metadata?.step === "MASTER" || message.content === "Master step completed.";
+        return {
+          id: message.id, sender: message.sender === "USER" ? "user" : "agent",
+          role: "MASTER", text: isPlannerResult && plan?.brief ? "Your content plan is ready. Research is starting." : message.content,
+          timestamp: new Date(message.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+          planBrief: isPlannerResult ? plan?.brief || undefined : undefined,
+          planSummary: isPlannerResult && plan ? { tasks: plan.tasks.map((task) => ({ agent: task.assignedAgent, title: task.title, status: task.status })) } : undefined,
+        } satisfies ChatMessage;
+      }));
     } else if (plans.length > 0) {
       const p = plans[0];
       setMessages([
@@ -199,6 +275,7 @@ export function AgentChat() {
           text: `Here's the plan for "${p.title}":`,
           timestamp: p.createdAt,
           status: p.status === "failed" ? "error" : "completed",
+          planBrief: p.brief || undefined,
           planSummary: {
             tasks: p.tasks.map((t) => ({
               agent: t.assignedAgent,
@@ -209,7 +286,7 @@ export function AgentChat() {
         },
       ]);
     } else setMessages([]);
-  }, [savedMessages, currentCampaignId]);
+  }, [savedMessages, plans, currentCampaignId]);
 
   // When activeAgent changes, ensure activeTab is valid for this agent
   useEffect(() => {
@@ -325,15 +402,17 @@ export function AgentChat() {
 
   // Agent-specific data
   const researchTask = activePlan?.tasks?.find((t) => t.assignedAgent === "RESEARCH");
+  const scriptTask = activePlan?.tasks?.find((t) => t.assignedAgent === "SCRIPT");
   const creatorTask = activePlan?.tasks?.find((t) => t.assignedAgent === "CREATOR");
   const schedulerTask = activePlan?.tasks?.find((t) => t.assignedAgent === "SCHEDULER");
 
   const parsedResearch = parseDetail(researchTask?.detail);
+  const parsedScript = parseDetail(scriptTask?.detail);
   const parsedCreator = parseDetail(creatorTask?.detail);
   const campaignPosts = posts;
 
   return (
-    <div className="flex h-[72dvh] min-h-[440px] md:h-[calc(100dvh-300px)] flex-col overflow-hidden rounded-2xl border border-white bg-white shadow-[0_8px_40px_-16px_rgba(30,64,175,0.22)] ring-1 ring-slate-200/90">
+    <div className="flex h-[78dvh] min-h-[560px] flex-col overflow-hidden rounded-2xl border border-white bg-white shadow-[0_8px_40px_-16px_rgba(30,64,175,0.22)] ring-1 ring-slate-200/90 md:h-[calc(100dvh-210px)]">
       {/* Left Agent Selector Strip */}
       <div className="flex shrink-0 gap-1 overflow-x-auto border-b border-slate-200/70 bg-gradient-to-b from-white to-slate-50/80 p-2" aria-label="Choose a team member">
         {(Object.keys(AGENT_CONFIGS) as AgentRole[]).map((role) => {
@@ -369,7 +448,7 @@ export function AgentChat() {
       {/* Main Agent Center Area */}
       <div className="flex-1 flex flex-col justify-between min-w-0 min-h-0">
         {/* Top Header */}
-        <div className="px-4 sm:px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-gradient-to-r from-white via-white to-blue-50/40">
+        <div className="px-4 sm:px-6 py-4 border-b border-slate-100 flex flex-wrap items-center gap-3 bg-gradient-to-r from-white via-white to-blue-50/40">
           <div className="flex items-center gap-3">
             <div className="relative">
               {currentConfig.avatarImg ? (
@@ -413,28 +492,27 @@ export function AgentChat() {
               </div>
             </div>
           </div>
-        </div>
 
-        {/* Dynamic Navigation Tabs */}
-        <div className="px-4 sm:px-6 border-b border-slate-100 flex gap-6 text-xs font-medium">
-          {currentConfig.tabs.map((tab) => {
-            const isActive = activeTab === tab;
-            return (
-              <button
-                key={tab}
-                onClick={() => setActiveTab(tab)}
-                aria-pressed={isActive}
-                className={`pb-3 pt-3 flex items-center gap-1.5 transition border-b-2 ${
-                  isActive
-                    ? "border-blue-600 text-blue-600"
-                    : "border-transparent text-slate-400 hover:text-slate-700"
-                }`}
-              >
-                {getTabIcon(tab)}
-                <span>{getTabLabel(tab)}</span>
-              </button>
-            );
-          })}
+          <nav aria-label={`${currentConfig.name} views`} className="ml-auto flex w-full items-center gap-1 rounded-xl bg-slate-100 p-1 text-xs font-medium sm:w-auto">
+            {currentConfig.tabs.map((tab) => {
+              const isActive = activeTab === tab;
+              return (
+                <button
+                  key={tab}
+                  onClick={() => setActiveTab(tab)}
+                  aria-pressed={isActive}
+                  className={`flex flex-1 items-center justify-center gap-1.5 rounded-lg px-3 py-2 transition sm:flex-none ${
+                    isActive
+                      ? "bg-white text-blue-600 shadow-sm"
+                      : "text-slate-500 hover:text-slate-800"
+                  }`}
+                >
+                  {getTabIcon(tab)}
+                  <span>{getTabLabel(tab)}</span>
+                </button>
+              );
+            })}
+          </nav>
         </div>
 
         {/* Dynamic Tab Body */}
@@ -519,6 +597,8 @@ export function AgentChat() {
                           </div>
 
                           <AgentResponse text={msg.text} />
+
+                          {msg.planBrief && <PlannerBriefCard brief={msg.planBrief} />}
 
                           {/* If Swarm is running */}
                           {msg.status === "running" && (
@@ -739,6 +819,14 @@ export function AgentChat() {
                     </div>
                   )}
                 </div>
+              )}
+
+              {/* === SCRIPT AGENT VIEW: Editable approval gate === */}
+              {activeAgent === "SCRIPT" && activePlan && (
+                <ScriptReview
+                  planId={activePlan.id}
+                  scripts={(Array.isArray(parsedScript?.scripts) ? parsedScript.scripts : []) as ContentScript[]}
+                />
               )}
 
               {/* === CREATOR AGENT VIEW: Created Drafts === */}
@@ -976,6 +1064,12 @@ export function AgentChat() {
                             >
                               View in Posts Hub →
                             </Link>
+                          </div>
+                        )}
+
+                        {activeAgent === "SCRIPT" && task.status === "done" && (
+                          <div className="pt-2 text-[11px] text-slate-500 border-t border-slate-100">
+                            {Array.isArray(parsed?.scripts) ? `${parsed.scripts.length} script(s) ready for review` : "Scripts ready for review"}
                           </div>
                         )}
 

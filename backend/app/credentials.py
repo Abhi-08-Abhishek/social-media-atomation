@@ -30,4 +30,4 @@ def decrypt_credential(value: str, user_id: str, hex_key: str) -> str:
             raise ValueError("Invalid credential")
         return AESGCM(key).decrypt(iv, ciphertext + tag, user_id.encode()).decode()
     except Exception:
-        raise ValueError("Stored credential could not be decrypted. Reconnect your Zernio account.") from None
+        raise ValueError("Stored credential could not be decrypted. Reconnect the affected account.") from None

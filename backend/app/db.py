@@ -14,7 +14,9 @@ metadata = MetaData()
 engine = None
 _connect_lock = asyncio.Lock()
 TABLES = ["User", "Account", "Session", "Campaign", "Post", "AgentPlan", "AgentTask",
-          "AgentMessage", "PostMetric", "StrategyReport", "RecommendationDecision", "SocialAccount"]
+          "AgentMessage", "PostMetric", "StrategyReport", "RecommendationDecision", "SocialAccount",
+          "MetaConnection", "MetaAdAccount", "MetaCampaign", "MetaAdSet", "MetaCreative", "MetaAd",
+          "MetaInsight", "MetaRecommendation", "MetaAuditEvent"]
 
 
 def now():

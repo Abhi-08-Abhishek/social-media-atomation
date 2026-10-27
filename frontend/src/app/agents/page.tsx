@@ -9,11 +9,6 @@ import Link from "next/link";
 export default function AgentsPage() {
   return (
     <div className="space-y-3 max-w-7xl mx-auto">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-base font-semibold tracking-tight text-slate-900">Good content starts with a conversation.</h2>
-        <Link href="/posts" className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-xs font-medium text-slate-700 shadow-sm hover:bg-slate-50">Review your posts →</Link>
-      </div>
-
       <WorkflowTimeline />
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-5 items-start">
         {/* Left Column: Agent Chat & Task Delegation */}
@@ -22,7 +17,7 @@ export default function AgentsPage() {
         </div>
 
         {/* Right Column: Live Isometric Office */}
-        <aside aria-label="Your team and guidance" tabIndex={0} className="min-w-0 space-y-4 rounded-xl xl:col-span-4 xl:h-[calc(100dvh-300px)] xl:min-h-[440px] xl:overflow-y-auto xl:overscroll-contain xl:px-1 xl:pb-1 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500">
+        <aside aria-label="Your team and guidance" tabIndex={0} className="min-w-0 space-y-4 rounded-xl xl:col-span-4 xl:h-[calc(100dvh-210px)] xl:min-h-[560px] xl:overflow-y-auto xl:overscroll-contain xl:px-1 xl:pb-1 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500">
           <section className="rounded-xl border border-slate-200 bg-white p-3" aria-labelledby="meet-your-team">
             <h3 id="meet-your-team" className="mb-3 px-1 text-sm font-semibold text-slate-800">Meet your team</h3>
             <VirtualOffice />

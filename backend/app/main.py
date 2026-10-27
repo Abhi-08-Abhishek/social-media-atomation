@@ -8,9 +8,10 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.middleware.sessions import SessionMiddleware
-from app import auth, workspace, publishing, ai
+from app import auth, workspace, publishing, ai, meta_ads
 from app.agents import workflow, analytics
 from app.integrations.zernio import ZernioError
+from app.integrations.meta import MetaError
 
 from app.agents.research import run_research
 from app.config import Settings, get_settings
@@ -42,7 +43,7 @@ app.add_middleware(SessionMiddleware, secret_key=get_settings().session_secret.g
 app.add_middleware(CORSMiddleware, allow_origins=[get_settings().frontend_origin],
                    allow_credentials=True, allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE"],
                    allow_headers=["Content-Type", "Authorization", "X-CSRF-Token"])
-for router in (auth.router, workspace.router, publishing.router, ai.router, workflow.router, analytics.router):
+for router in (auth.router, workspace.router, publishing.router, ai.router, workflow.router, analytics.router, meta_ads.router):
     app.include_router(router)
 
 
@@ -54,6 +55,14 @@ async def value_error(_request: Request, error: ValueError):
 @app.exception_handler(ZernioError)
 async def zernio_error(_request: Request, error: ZernioError):
     return JSONResponse(status_code=502, content={"error": str(error)})
+
+
+@app.exception_handler(MetaError)
+async def meta_error(_request: Request, error: MetaError):
+    # A Meta 401 is an invalid Meta credential, not an expired Socialix session.
+    status = 400 if error.status == 401 else error.status if error.status and 400 <= error.status < 500 else 504 if error.ambiguous else 502
+    return JSONResponse(status_code=status, content={"error": str(error), "code": error.code,
+        "requiresReconciliation": error.ambiguous})
 
 
 @app.exception_handler(Exception)

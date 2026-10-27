@@ -15,6 +15,7 @@ export function Header() {
   const searchRef = useRef<HTMLInputElement>(null);
   const pathname = usePathname();
   const router = useRouter();
+  const isMetaAds = pathname.startsWith("/ads");
 
   useEffect(() => {
     const focusSearch = (event: KeyboardEvent) => {
@@ -75,6 +76,12 @@ export function Header() {
         subtitle: "See how your posts are doing",
       };
     }
+    if (isMetaAds) {
+      return {
+        title: "Meta Ads",
+        subtitle: "Create, monitor and safely optimize paid campaigns",
+      };
+    }
     if (pathname === "/") {
       return {
         title: "Overview",
@@ -107,7 +114,7 @@ export function Header() {
       {logoutError && <p role="alert" className="text-xs text-rose-700">{logoutError}</p>}
       <div className="flex items-center gap-3">
         {/* Search Bar */}
-        <form onSubmit={submitSearch} className="relative hidden w-56 lg:block">
+        {!isMetaAds && <form onSubmit={submitSearch} className="relative hidden w-56 lg:block">
           <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
           <input
             ref={searchRef}
@@ -121,16 +128,16 @@ export function Header() {
           <kbd className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] font-semibold text-slate-400 bg-white border border-slate-200 px-1.5 py-0.5 rounded shadow-2xs">
             Ctrl K
           </kbd>
-        </form>
+        </form>}
 
         {/* Create Post Button matching Screenshot 1 */}
         <button
-          onClick={() => openPostEditor(null)}
-          aria-label="Create post"
+          onClick={() => isMetaAds ? document.getElementById("meta-campaign-builder")?.scrollIntoView({ behavior: "smooth" }) : openPostEditor(null)}
+          aria-label={isMetaAds ? "Create paid campaign" : "Create post"}
           className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold px-4 py-2 rounded-xl shadow-xs transition"
         >
           <Plus className="w-3.5 h-3.5" />
-          <span className="hidden sm:inline">Create post</span>
+          <span className="hidden sm:inline">{isMetaAds ? "New campaign" : "Create post"}</span>
         </button>
 
         {/* Profile Avatar Badge matching Screenshot 1 */}

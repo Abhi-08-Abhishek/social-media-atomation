@@ -46,6 +46,8 @@ CREATE TABLE public."Campaign" (
 	"updatedAt" TIMESTAMP(3) WITHOUT TIME ZONE NOT NULL, 
 	"approvalMode" TEXT NOT NULL, 
 	"brandDescription" TEXT NOT NULL, 
+	objective TEXT DEFAULT 'REACH'::text NOT NULL,
+	"targetMetric" TEXT DEFAULT 'reach'::text NOT NULL,
 	"optimizationEnabled" BOOLEAN NOT NULL, 
 	platforms TEXT[], 
 	"postCount" INTEGER NOT NULL, 
@@ -55,6 +57,8 @@ CREATE TABLE public."Campaign" (
 	timezone TEXT NOT NULL, 
 	tone TEXT NOT NULL, 
 	"brandProfile" JSONB, 
+	CONSTRAINT "Campaign_objective_check" CHECK (objective IN ('REACH', 'ENGAGEMENT', 'VIDEO_VIEWS')),
+	CONSTRAINT "Campaign_targetMetric_check" CHECK ("targetMetric" IN ('reach', 'engagementRate', 'views')),
 	CONSTRAINT "Campaign_pkey" PRIMARY KEY (id), 
 	CONSTRAINT "Campaign_userId_fkey" FOREIGN KEY("userId") REFERENCES public."User" (id) ON DELETE CASCADE ON UPDATE CASCADE
 )

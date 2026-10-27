@@ -38,6 +38,7 @@ export function CreateCampaignModal() {
   const [targetAudience, setTargetAudience] = useState("");
   const [postCount, setPostCount] = useState("");
   const [approvalMode, setApprovalMode] = useState<"REVIEW" | "AUTO">("REVIEW");
+  const [objective, setObjective] = useState<"REACH" | "ENGAGEMENT" | "VIDEO_VIEWS">("REACH");
   const [optimizationEnabled] = useState(true);
   const [timezone, setTimezone] = useState("");
   const [error, setError] = useState("");
@@ -57,6 +58,7 @@ export function CreateCampaignModal() {
     setTargetAudience("");
     setPostCount("");
     setApprovalMode("REVIEW");
+    setObjective("REACH");
     setTimezone(detectedTimezone);
     setError("");
     void apiFetch("/api/zernio/accounts", { cache: "no-store" })
@@ -93,7 +95,7 @@ export function CreateCampaignModal() {
       await createCampaign({
         name, logo, officeTheme, brandDescription, targetAudience,
         socialAccountIds: selectedAccounts, timezone,
-        postCount: Number(postCount), approvalMode, optimizationEnabled,
+        postCount: Number(postCount), approvalMode, objective, optimizationEnabled,
       });
       setStep(1);
     } catch (reason) {
@@ -141,6 +143,7 @@ export function CreateCampaignModal() {
               <div className="grid gap-4 md:grid-cols-2">
                 <Field label="Campaign name"><input required maxLength={100} value={name} onChange={(event) => setName(event.target.value)} placeholder="Name your campaign" className="input !bg-white" /></Field>
                 <Field label="Posts per request"><input required min="1" max="20" type="number" value={postCount} onChange={(event) => setPostCount(event.target.value)} placeholder="How many posts?" className="input !bg-white" /></Field>
+                <Field label="Primary objective" wide><select value={objective} onChange={(event) => setObjective(event.target.value as typeof objective)} className="input !bg-white"><option value="REACH">Reach more people</option><option value="ENGAGEMENT">Increase engagement</option><option value="VIDEO_VIEWS">Increase video views</option></select></Field>
               </div>
             </section>
 

@@ -11,6 +11,7 @@ import {
   ArrowRight,
   ListTodo,
   Lightbulb,
+  FilePenLine,
 } from "lucide-react";
 
 interface AgentDeskHotspot {
@@ -67,6 +68,15 @@ export function VirtualOffice() {
           modalClass: "top-12 left-3 sm:left-6",
         },
         {
+          role: "SCRIPT",
+          name: "Script Agent",
+          defaultTask: getAgentTask("SCRIPT", "Ready to write editable scripts"),
+          icon: FilePenLine,
+          color: "#7c3aed",
+          position: { top: "40%", left: "40%" },
+          modalClass: "top-16 left-4 sm:left-10",
+        },
+        {
           role: "SCHEDULER",
           name: "Scheduler Agent",
           defaultTask: getAgentTask("SCHEDULER", "Ready to schedule via Zernio"),
@@ -112,6 +122,15 @@ export function VirtualOffice() {
           color: "#eab308",
           position: { top: "49.5%", left: "12%" },
           modalClass: "top-12 left-3 sm:left-6",
+        },
+        {
+          role: "SCRIPT",
+          name: "Script Agent",
+          defaultTask: getAgentTask("SCRIPT", "Ready to write editable scripts"),
+          icon: FilePenLine,
+          color: "#7c3aed",
+          position: { top: "38%", left: "53%" },
+          modalClass: "top-16 left-4 sm:left-10",
         },
         {
           role: "SCHEDULER",

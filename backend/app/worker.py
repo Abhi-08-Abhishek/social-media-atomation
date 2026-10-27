@@ -1,4 +1,4 @@
-"""Persistent PostgreSQL queue consumer. Run separately from the HTTP server."""
+"""Persistent PostgreSQL queue consumer bundled with the local HTTP server."""
 import asyncio
 import logging
 import time
@@ -9,6 +9,7 @@ from app.config import get_settings
 from app.db import connect, transaction, table, now
 from app.agents.workflow import advance
 from app.agents.analytics import sync_campaign
+from app.agents.meta_ads import sync_campaign as sync_meta_campaign
 
 log = logging.getLogger("socialix.worker")
 
@@ -16,6 +17,7 @@ log = logging.getLogger("socialix.worker")
 async def run():
     await connect()
     last_analytics = {}
+    last_meta_analytics = {}
     campaign_cursor = ""
     slots = asyncio.Semaphore(2)
     async with httpx.AsyncClient() as http:
@@ -27,6 +29,13 @@ async def run():
                         c.c.status == "active", p.c.status == "in_progress", or_(p.c.leaseUntil.is_(None), p.c.leaseUntil < now())
                     ).order_by(p.c.updatedAt).limit(10))
                     campaigns = await db.rows(select(c.c.id).where(c.c.status == "active", c.c.id > campaign_cursor).order_by(c.c.id).limit(100))
+                    mc, mconn = table("MetaCampaign"), table("MetaConnection")
+                    meta_campaigns = await db.rows(select(mc.c.id).join(mconn, mconn.c.userId == mc.c.userId).where(
+                        mc.c.remoteId.is_not(None), mc.c.status.in_(["REMOTE_PAUSED", "ACTIVE", "PAUSED"]),
+                        mconn.c.status == "CONNECTED", mconn.c.encryptedToken.is_not(None),
+                        mconn.c.adAccountRemoteId.is_not(None),
+                        or_(mconn.c.tokenExpiresAt.is_(None), mconn.c.tokenExpiresAt > now())
+                    ).order_by(mc.c.updatedAt).limit(100))
                 campaign_cursor = campaigns[-1]["id"] if len(campaigns) == 100 else ""
                 analytics_ids = {campaign["id"] for campaign in campaigns}
                 jobs = {}
@@ -50,6 +59,17 @@ async def run():
                         except Exception:
                             log.warning("Analytics synchronization failed for campaign %s; retrying next interval.", identity)
                 await asyncio.gather(*(process(identity, plan_ids) for identity, plan_ids in jobs.items()))
+                async def process_meta(meta_campaign):
+                    identity = meta_campaign["id"]
+                    if time.monotonic() - last_meta_analytics.get(identity, -get_settings().meta_insights_sync_seconds) < get_settings().meta_insights_sync_seconds:
+                        return
+                    last_meta_analytics[identity] = time.monotonic()
+                    async with slots:
+                        try:
+                            await sync_meta_campaign(identity, http)
+                        except Exception:
+                            log.warning("Meta Ads synchronization failed for campaign %s; retrying next interval.", identity)
+                await asyncio.gather(*(process_meta(meta_campaign) for meta_campaign in meta_campaigns))
             except Exception:
                 log.error("Worker tick failed; database or provider unavailable. Retrying.")
             await asyncio.sleep(get_settings().worker_poll_seconds)

@@ -14,6 +14,7 @@ from app.integrations.research import ResearchProviders
 from app.schemas.research import Contract
 from app.schemas.content import Platform, Format
 from app.policy import METRICS
+from app.skills import select_skill_context
 
 
 class NextBrief(Contract):
@@ -66,12 +67,19 @@ async def recommend(http, campaign, measured, by_post, plans):
         strategy_report = await db.one(select(r).where(r.c.campaignId == campaign_id, r.c.metricsFingerprint == fingerprint))
     if not strategy_report:
         try:
-            result = await ResearchProviders(get_settings(), http).structured("growth_strategy",
-                "Analyze only supplied measured posts. Null metrics are unavailable, never zero. Compare within the same platform, "
+            providers = ResearchProviders(get_settings(), http)
+            skills = await select_skill_context(providers, json.dumps({
+                "agent": "growth strategist", "campaign": campaign["name"],
+                "platforms": campaign["platforms"], "measuredPostCount": len(sample_data),
+                "task": "Analyze measured social performance and recommend the next experiments.",
+            }, default=str))
+            result = await providers.structured("growth_strategy",
+                skills + "\n\nAnalyze only supplied measured posts. Null metrics are unavailable, never zero. Compare within the same platform, "
                 "format and publication-age band. Cite supplied post IDs for every proposed brief. Use only selected platforms. "
+                "Optimize recommendations for the supplied campaign targetMetric. "
                 "Do not invent demographics, conversions or competitor data. Small samples need experiments, not winning claims. "
                 "Use the campaign timezone for posting windows. Recommendations require user approval; do not schedule them.",
-                json.dumps({"campaign": {k: campaign[k] for k in ("name", "brandDescription", "targetAudience", "platforms", "timezone")},
+                json.dumps({"campaign": {k: campaign[k] for k in ("name", "brandDescription", "targetAudience", "platforms", "timezone", "objective", "targetMetric")},
                     "posts": sample_data, "evaluatedAt": now()}, default=str), Strategy)
             valid_ids = {post["id"] for post in sample}
             if any(b.platform not in campaign["platforms"] or set(b.evidencePostIds) - valid_ids for b in result.nextContentBriefs):

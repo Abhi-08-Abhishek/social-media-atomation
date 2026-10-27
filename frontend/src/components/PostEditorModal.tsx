@@ -151,7 +151,7 @@ export function PostEditorModal() {
   const previewImages = [imageUrl, ...(format === "Carousel" ? extraImages.split("\n").map((url) => url.trim()).filter(Boolean) : [])].filter(Boolean);
   const visibleSlide = Math.min(previewSlide, Math.max(0, previewImages.length - 1));
 
-  /** Recreate caption using SenseNova LLM */
+  /** Recreate the caption using the configured text model. */
   const recreateCaption = async (instruction?: string) => {
     if (!title.trim() && !caption.trim()) {
       setError("Please ensure there is a title or caption draft to recreate.");

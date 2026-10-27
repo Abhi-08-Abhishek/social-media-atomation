@@ -49,6 +49,7 @@ export function Sidebar() {
     { label: "Posts", href: "/posts", icon: FileText },
     { label: "Calendar", href: "/calendar", icon: Calendar },
     { label: "Analytics", href: "/analytics", icon: BarChart3 },
+    { label: "Meta Ads", href: "/ads", icon: Megaphone },
     { label: "Accounts", href: "/accounts", icon: Link2 },
   ];
 
@@ -205,7 +206,7 @@ export function Sidebar() {
           <nav className="space-y-1">
             {navItems.map((item) => {
               const Icon = item.icon;
-              const isActive = pathname === item.href;
+              const isActive = pathname === item.href || (item.href !== "/" && pathname.startsWith(item.href + "/"));
               return (
                 <Link
                   key={item.href}

@@ -7,6 +7,18 @@ from app.schemas.research import Contract
 
 Platform = Literal["INSTAGRAM", "FACEBOOK", "LINKEDIN", "X", "TIKTOK", "YOUTUBE"]
 Format = Literal["Single Post", "Carousel", "Reel"]
+CampaignObjective = Literal["REACH", "ENGAGEMENT", "VIDEO_VIEWS"]
+TargetMetric = Literal["reach", "engagementRate", "views"]
+
+OBJECTIVE_METRICS: dict[CampaignObjective, TargetMetric] = {
+    "REACH": "reach",
+    "ENGAGEMENT": "engagementRate",
+    "VIDEO_VIEWS": "views",
+}
+
+
+def objective_metric(objective: CampaignObjective) -> TargetMetric:
+    return OBJECTIVE_METRICS[objective]
 
 
 class BrandProfile(Contract):
@@ -30,6 +42,7 @@ class CampaignCreate(Contract):
     timezone: str = Field(min_length=1, max_length=100)
     postCount: int = Field(ge=1, le=20, strict=True)
     approvalMode: Literal["REVIEW", "AUTO"] = "REVIEW"
+    objective: CampaignObjective = "REACH"
     optimizationEnabled: bool = True
 
     @field_validator("timezone")
@@ -46,6 +59,7 @@ class CampaignUpdate(Contract):
     officeTheme: Literal["modern", "wooden"] | None = None
     status: Literal["active", "ended"] | None = None
     approvalMode: Literal["REVIEW", "AUTO"] | None = None
+    objective: CampaignObjective | None = None
     optimizationEnabled: bool | None = None
     brandDescription: str | None = Field(default=None, max_length=4000)
     targetAudience: str | None = Field(default=None, max_length=2000)
@@ -158,12 +172,31 @@ class CreativeBrief(Contract):
     visualDirection: str = Field(min_length=10, max_length=400)
 
 
-class PostCopy(Caption):
+class ImagePoint(Contract):
+    title: str = Field(min_length=1, max_length=45)
+    body: str = Field(min_length=1, max_length=120)
+
+
+class CopyDraft(Caption):
     title: str = Field(min_length=1, max_length=120)
     creativeBrief: CreativeBrief
     sourceUrls: list[HttpUrl] = Field(min_length=1, max_length=10)
+
+
+class SingleImagePlan(Contract):
     imageHeadline: str = Field(min_length=1, max_length=80)
     imageSummary: str = Field(max_length=160)
+    imagePoints: list[ImagePoint] = Field(default_factory=list, max_length=5)
+
+    @model_validator(mode="after")
+    def infographic(self):
+        if self.imagePoints and len(self.imagePoints) < 3:
+            raise ValueError("An infographic needs 3–5 points.")
+        return self
+
+
+class PostCopy(CopyDraft, SingleImagePlan):
+    pass
 
 
 class CarouselSlides(Contract):
@@ -208,6 +241,13 @@ class GeneratedBatch(Contract):
     posts: list[GeneratedPost] = Field(min_length=1, max_length=20)
 
 
+class Deliverable(Contract):
+    platform: Platform
+    format: Format
+    topic: str = Field(min_length=1, max_length=300)
+    objective: str = Field(min_length=1, max_length=500)
+
+
 class Brief(Contract):
     title: str = Field(min_length=1, max_length=120)
     objective: str = Field(min_length=1, max_length=1000)
@@ -215,4 +255,5 @@ class Brief(Contract):
     researchQuestions: list[str] = Field(min_length=1, max_length=8)
     successMetrics: list[str] = Field(min_length=1, max_length=6)
     creatorInstructions: str = Field(min_length=1, max_length=2000)
+    deliverables: list[Deliverable] = Field(min_length=1, max_length=20)
     approvalMode: Literal["REVIEW", "AUTO"]
